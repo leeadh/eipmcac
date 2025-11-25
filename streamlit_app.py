@@ -11,7 +11,6 @@ st.set_page_config(
 )
 
 # Initialize Azure OpenAI client
-@st.cache_resource
 def get_client(api_key, endpoint):
     return AzureOpenAI(
         azure_endpoint=endpoint,
@@ -78,6 +77,20 @@ if not assistant_id:
 # Initialize client with provided credentials
 try:
     client = get_client(azure_api_key, azure_endpoint)
+    
+    # Verify assistant exists and get its configuration
+    try:
+        assistant = client.beta.assistants.retrieve(assistant_id)
+        st.success(f"✅ Connected to assistant: **{assistant.name or assistant_id}**", icon="✅")
+        
+        # Show if file_search is enabled
+        if assistant.tools:
+            tools_list = [tool.type for tool in assistant.tools]
+            if 'file_search' in tools_list:
+                st.info("🔍 File search is enabled - the assistant can search through uploaded documents.", icon="ℹ️")
+    except Exception as e:
+        st.warning(f"⚠️ Could not verify assistant: {str(e)}")
+        
 except Exception as e:
     st.error(f"Error initializing client: {str(e)}")
     st.stop()
@@ -91,6 +104,7 @@ if "thread_id" not in st.session_state:
     try:
         thread = client.beta.threads.create()
         st.session_state.thread_id = thread.id
+        st.info(f"📝 New conversation started (Thread ID: {thread.id[:20]}...)", icon="ℹ️")
     except Exception as e:
         st.error(f"Error creating thread: {str(e)}")
         st.stop()
@@ -126,6 +140,29 @@ with st.sidebar:
             st.rerun()
         except Exception as e:
             st.error(f"Error creating new thread: {str(e)}")
+    
+    st.divider()
+    
+    # Debug information
+    with st.expander("🔧 Debug Info"):
+        st.text(f"Thread ID: {st.session_state.get('thread_id', 'N/A')}")
+        st.text(f"Assistant ID: {assistant_id}")
+        st.text(f"Messages in history: {len(st.session_state.messages)}")
+        
+        if st.button("🔍 Check Assistant Config"):
+            try:
+                asst = client.beta.assistants.retrieve(assistant_id)
+                st.json({
+                    "name": asst.name,
+                    "model": asst.model,
+                    "instructions": asst.instructions[:200] + "..." if asst.instructions else None,
+                    "tools": [tool.type for tool in asst.tools] if asst.tools else [],
+                    "has_vector_store": bool(asst.tool_resources and 
+                                           asst.tool_resources.file_search and 
+                                           asst.tool_resources.file_search.vector_store_ids)
+                })
+            except Exception as e:
+                st.error(f"Error: {e}")
 
 # Display chat messages
 for message in st.session_state.messages:
@@ -184,14 +221,30 @@ if prompt := st.chat_input("Type your message here..."):
                     # Get the last assistant message
                     latest_message = assistant_messages[0]
                     
-                    # Extract text content
+                    # Extract text content and citations
                     response_text = ""
+                    citations = []
+                    
                     for content_block in latest_message.content:
                         if hasattr(content_block, 'text'):
-                            response_text += content_block.text.value
+                            text_obj = content_block.text
+                            response_text += text_obj.value
+                            
+                            # Extract file citations
+                            if hasattr(text_obj, 'annotations') and text_obj.annotations:
+                                for annotation in text_obj.annotations:
+                                    if hasattr(annotation, 'file_citation'):
+                                        citations.append(annotation.file_citation.file_id)
                     
                     # Display the response
                     message_placeholder.markdown(response_text)
+                    
+                    # Show citations if available
+                    if citations:
+                        with st.expander("📚 Sources", expanded=False):
+                            st.write(f"Response generated from {len(citations)} file citation(s)")
+                            for idx, file_id in enumerate(set(citations), 1):
+                                st.text(f"{idx}. File ID: {file_id}")
                     
                     # Add to chat history
                     st.session_state.messages.append({
@@ -199,13 +252,21 @@ if prompt := st.chat_input("Type your message here..."):
                         "content": response_text
                     })
                 else:
-                    message_placeholder.markdown("❌ No response received.")
+                    message_placeholder.markdown("❌ No response received from assistant.")
+                    st.error(f"Debug: Found {len(messages.data)} total messages, but none from this run.")
             
             elif run.status == 'requires_action':
                 message_placeholder.markdown("⚠️ This request requires additional actions that are not yet supported.")
+                st.error(f"Debug: Run requires action - {run.required_action}")
+            
+            elif run.status == 'failed':
+                message_placeholder.markdown(f"❌ Assistant run failed.")
+                if hasattr(run, 'last_error') and run.last_error:
+                    st.error(f"Error details: {run.last_error.message}")
             
             else:
                 message_placeholder.markdown(f"❌ Error: Run status is {run.status}")
+                st.error(f"Debug info: {run}")
         
         except Exception as e:
             message_placeholder.markdown(f"❌ Error: {str(e)}")
