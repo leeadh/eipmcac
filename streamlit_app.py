@@ -43,7 +43,7 @@ col1, col2 = st.columns(2)
 with col1:
     azure_endpoint = st.text_input(
         "Azure OpenAI Endpoint",
-        value="https://adrianleeopenai.openai.azure.com/",
+        value=os.getenv("AZURE_OPENAI_ENDPOINT", "https://adrianleeopenai.openai.azure.com/"),
         help="Enter your Azure OpenAI endpoint URL",
         type="default"
     )
@@ -51,15 +51,23 @@ with col1:
 with col2:
     azure_api_key = st.text_input(
         "Azure OpenAI API Key",
+        value=os.getenv("AZURE_OPENAI_API_KEY", ""),
         type="password",
         help="Enter your Azure OpenAI API key"
     )
 
-assistant_id = st.text_input(
-    "Assistant ID",
-    value="asst_Bts3TWKJpul7D9mc0fAfEd25",
-    help="Enter your Azure OpenAI Assistant ID"
-)
+# Option to use existing or create new assistant
+use_existing = st.checkbox("Use existing Assistant ID", value=True)
+
+assistant_id = None
+if use_existing:
+    assistant_id = st.text_input(
+        "Assistant ID",
+        value="asst_Bts3TWKJpul7D9mc0fAfEd25",
+        help="Enter your Azure OpenAI Assistant ID"
+    )
+else:
+    st.info("ℹ️ A new assistant will be created for this session with the configured settings.")
 
 # Check if credentials are provided
 if not azure_api_key:
@@ -70,7 +78,7 @@ if not azure_endpoint:
     st.warning("Please enter your Azure OpenAI endpoint.", icon="⚠️")
     st.stop()
 
-if not assistant_id:
+if use_existing and not assistant_id:
     st.warning("Please enter your Assistant ID.", icon="⚠️")
     st.stop()
 
@@ -78,18 +86,38 @@ if not assistant_id:
 try:
     client = get_client(azure_api_key, azure_endpoint)
     
-    # Verify assistant exists and get its configuration
-    try:
-        assistant = client.beta.assistants.retrieve(assistant_id)
-        st.success(f"✅ Connected to assistant: **{assistant.name or assistant_id}**", icon="✅")
-        
-        # Show if file_search is enabled
-        if assistant.tools:
-            tools_list = [tool.type for tool in assistant.tools]
-            if 'file_search' in tools_list:
-                st.info("🔍 File search is enabled - the assistant can search through uploaded documents.", icon="ℹ️")
-    except Exception as e:
-        st.warning(f"⚠️ Could not verify assistant: {str(e)}")
+    # Create or retrieve assistant
+    if use_existing:
+        # Use existing assistant
+        try:
+            assistant = client.beta.assistants.retrieve(assistant_id)
+            st.success(f"✅ Connected to assistant: **{assistant.name or assistant_id}**", icon="✅")
+            
+            # Show if file_search is enabled
+            if assistant.tools:
+                tools_list = [tool.type for tool in assistant.tools]
+                if 'file_search' in tools_list:
+                    st.info("🔍 File search is enabled - the assistant can search through uploaded documents.", icon="ℹ️")
+        except Exception as e:
+            st.error(f"⚠️ Could not verify assistant: {str(e)}")
+            st.stop()
+    else:
+        # Create new assistant
+        try:
+            assistant = client.beta.assistants.create(
+                model="adriangpt4",  # replace with model deployment name.
+                instructions="You are an EIP assistant. Always look through the relveant information inside the vector store first and data files. Search properly before responding. this is mandatory and there is no excuse. If you dont find relevant information i rather u reply you arent sure. If anything redirect them to https://www.mindchamps-alliedcare.com/. \n\nPersonality: Be cheerful and ensure your tone is happy and assuring when chatting with parents. Insert in appropriate emojis. \n\n\none: If they select \"Early Intervention (EIP)\"\nThanks for choosing EIP\nYou've taken a strong step towards giving your child structured, high-quality support early — which we know makes the biggest difference. 😊 \nTo help you better, may I know your child's:\n• Name\n• Age\n• Area(s) of concern\n• Preferred centre: Tampines or Toa Payoh\nWe'll guide you through the next steps right away.\n⸻\n:two: If they select \"Speech Therapy (ST)\"\nThank you! You've selected Speech Therapy.\nParents who reach out for ST usually want clarity on late speech, unclear articulation, stuttering, or social-communication skills — you're in the right place.\nCould you share your child's:\n• Name\n• Age\n• Main speech/language concern\n• Preferred location (Tampines / Toa Payoh)\nWe'll advise on suitability and next steps.\n⸻\n:three: If they select \"Occupational Therapy (OT)\"\nGreat, you've selected Occupational Therapy.\nOT can support sensory needs, attention, handwriting, motor skills, emotional regulation and more — and reaching out early makes a huge difference.\nTo assist you, can I have:\n• Your child's name\n• Age\n• Key concerns (sensory? regulation? motor?)\n• Preferred centre (Tampines / Toa Payoh)\nWe'll help you understand the best pathway forward. \n⸻\n:four: If they select \"Psychology\"\nThank you! You've selected Child Psychology.\nThis tells us you're looking for deeper understanding of behaviour, emotions, anxiety, confidence, or school-related challenges — and that's exactly what we specialise in.\nTo support you, please share:\n• Child's name\n• Age\n• Main behavioural/emotional concern\n• Any recent events we should be aware of\nWe'll guide you from here. \n⸻\n:five: If they select \"Developmental Screening\"\nPerfect — you've chosen Developmental Screening.\nThis is often the best first step when you just want clarity or peace of mind about your child's milestones.\nPlease share:\n• Child's name\n• Age\n• Area(s) you're unsure about\n• Preferred location (Tampines / Toa Payoh)\nWe'll recommend the most suitable screening option.\n⸻\n:six: If they select \"Admin / Fees / Enrolment\"\nSure! You've selected Admin / Fees / Enrolment.\nWe'll help you with availability, pricing, schedules, or any registration matters.\nWhat would you like to check on? :blush:",
+                tools=[{"type": "file_search"}],
+                tool_resources={"file_search": {"vector_store_ids": ["vs_lEYJnCXEWCZoCqefVmALkQ4x"]}},
+                temperature=0.06,
+                top_p=0.34
+            )
+            assistant_id = assistant.id
+            st.success(f"✅ Created new assistant: **{assistant.id}**", icon="✅")
+            st.info("🔍 File search is enabled - the assistant can search through uploaded documents.", icon="ℹ️")
+        except Exception as e:
+            st.error(f"⚠️ Could not create assistant: {str(e)}")
+            st.stop()
         
 except Exception as e:
     st.error(f"Error initializing client: {str(e)}")
@@ -100,7 +128,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "thread_id" not in st.session_state:
-    # Create a new thread for this session
+    # Create a new thread
     try:
         thread = client.beta.threads.create()
         st.session_state.thread_id = thread.id
@@ -146,20 +174,18 @@ with st.sidebar:
     # Debug information
     with st.expander("🔧 Debug Info"):
         st.text(f"Thread ID: {st.session_state.get('thread_id', 'N/A')}")
-        st.text(f"Assistant ID: {assistant_id}")
+        st.text(f"Assistant ID: {assistant.id}")
         st.text(f"Messages in history: {len(st.session_state.messages)}")
         
         if st.button("🔍 Check Assistant Config"):
             try:
-                asst = client.beta.assistants.retrieve(assistant_id)
                 st.json({
-                    "name": asst.name,
-                    "model": asst.model,
-                    "instructions": asst.instructions[:200] + "..." if asst.instructions else None,
-                    "tools": [tool.type for tool in asst.tools] if asst.tools else [],
-                    "has_vector_store": bool(asst.tool_resources and 
-                                           asst.tool_resources.file_search and 
-                                           asst.tool_resources.file_search.vector_store_ids)
+                    "name": assistant.name,
+                    "model": assistant.model,
+                    "instructions": assistant.instructions[:200] + "..." if assistant.instructions else None,
+                    "tools": [tool.type for tool in assistant.tools] if assistant.tools else [],
+                    "temperature": assistant.temperature,
+                    "top_p": assistant.top_p
                 })
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -194,7 +220,7 @@ if prompt := st.chat_input("Type your message here..."):
             # Run the assistant
             run = client.beta.threads.runs.create(
                 thread_id=st.session_state.thread_id,
-                assistant_id=assistant_id
+                assistant_id=assistant.id
             )
             
             # Poll for completion
